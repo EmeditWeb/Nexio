@@ -1,161 +1,143 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import MessageBubble from './MessageBubble';
+import { getDateLabel } from '../../utils/dateUtils';
 
 /**
- * MessageList — scrollable message area with auto-scroll and date dividers.
+ * MessageList — scrollable message area with date dividers, scroll-to-bottom, and pagination.
  */
 const MessageList = ({
-  messages,
-  loading,
-  currentUserId,
-  conversation,
-  onReply,
-  onDelete,
-  onMarkAsRead,
+  messages, loading, loadingMore, hasMore, onLoadMore,
+  currentUserId, conversationId, chatHook, onReply,
 }) => {
-  const endRef = useRef(null);
   const listRef = useRef(null);
-  const [contextMenu, setContextMenu] = useState(null);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const prevLengthRef = useRef(0);
+  const isFirstLoad = useRef(true);
 
-  // Auto-scroll to bottom when new messages arrive
+  // Auto-scroll to bottom on first load or new messages
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
+    if (!listRef.current || messages.length === 0) return;
 
-  // Mark visible messages as read
-  useEffect(() => {
-    if (!messages.length || !currentUserId) return;
-
-    const unreadByOthers = messages
-      .filter(m => m.user_id !== currentUserId)
-      .map(m => m.id);
-
-    if (unreadByOthers.length > 0) {
-      onMarkAsRead(unreadByOthers);
+    if (isFirstLoad.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight;
+      isFirstLoad.current = false;
+      prevLengthRef.current = messages.length;
+      return;
     }
-  }, [messages, currentUserId, onMarkAsRead]);
 
-  // Close context menu on click outside
-  useEffect(() => {
-    const handleClick = () => setContextMenu(null);
-    if (contextMenu) {
-      document.addEventListener('click', handleClick);
-      return () => document.removeEventListener('click', handleClick);
+    // Only auto-scroll if user is near the bottom
+    const el = listRef.current;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+
+    if (nearBottom || messages.length > prevLengthRef.current) {
+      el.scrollTop = el.scrollHeight;
     }
-  }, [contextMenu]);
+    prevLengthRef.current = messages.length;
+  }, [messages]);
 
-  // Group messages by date
-  const getDateLabel = (dateStr) => {
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diff = now - date;
+  // Reset first load flag when conversation changes
+  useEffect(() => { isFirstLoad.current = true; }, [conversationId]);
 
-    if (diff < 86400000 && date.getDate() === now.getDate()) return 'Today';
-    if (diff < 172800000) return 'Yesterday';
-    return date.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+  // Handle scroll — show/hide scroll button, load older messages
+  const handleScroll = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setShowScrollBottom(distFromBottom > 300);
+
+    // Load older messages when scrolled to top
+    if (el.scrollTop < 50 && hasMore && !loadingMore) {
+      const prevHeight = el.scrollHeight;
+      onLoadMore().then(() => {
+        // Maintain scroll position after prepending older messages
+        requestAnimationFrame(() => {
+          el.scrollTop = el.scrollHeight - prevHeight;
+        });
+      });
+    }
+  }, [hasMore, loadingMore, onLoadMore]);
+
+  const scrollToBottom = () => {
+    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
   };
 
+  // Group messages by date for dividers
+  const messagesWithDividers = useMemo(() => {
+    const items = [];
+    let lastDate = '';
+    messages.forEach(msg => {
+      const dateStr = new Date(msg.created_at).toDateString();
+      if (dateStr !== lastDate) {
+        items.push({ type: 'divider', date: msg.created_at, key: `div-${dateStr}` });
+        lastDate = dateStr;
+      }
+      items.push({ type: 'message', data: msg, key: msg.id });
+    });
+    return items;
+  }, [messages]);
+
+  // Skeleton loader
   if (loading) {
     return (
-      <div className="message-list">
-        <div className="flex-center" style={{ flex: 1 }}>
-          <span className="text-muted">Loading messages...</span>
+      <div className="message-list" style={{ justifyContent: 'flex-end' }}>
+        {Array.from({ length: 8 }).map((_, i) => (
+          <div key={i} className={`skeleton-message ${i % 3 === 0 ? 'sent' : 'received'}`}>
+            <div className="skeleton skeleton-bubble" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (messages.length === 0) {
+    return (
+      <div className="message-list" style={{ justifyContent: 'center', alignItems: 'center' }}>
+        <div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
+          <div style={{ fontSize: '40px', marginBottom: '12px' }}>👋</div>
+          <p style={{ fontSize: '14px' }}>No messages yet. Say hello!</p>
         </div>
       </div>
     );
   }
 
-  let lastDate = '';
-
   return (
-    <div className="message-list" ref={listRef}>
-      {messages.map((msg, idx) => {
-        const msgDate = getDateLabel(msg.created_at);
-        const showDateDivider = msgDate !== lastDate;
-        lastDate = msgDate;
+    <>
+      <div className="message-list" ref={listRef} onScroll={handleScroll}>
+        {loadingMore && (
+          <div className="flex-center" style={{ padding: '12px' }}>
+            <div className="splash-spinner" style={{ width: '20px', height: '20px' }} />
+          </div>
+        )}
 
-        // Check if this is the first message from this sender in a sequence
-        const prevMsg = messages[idx - 1];
-        const isFirstInGroup = !prevMsg || prevMsg.user_id !== msg.user_id;
-
-        return (
-          <div key={msg.id}>
-            {showDateDivider && (
-              <div className="message-date-divider">
-                <span>{msgDate}</span>
+        {messagesWithDividers.map(item => {
+          if (item.type === 'divider') {
+            return (
+              <div key={item.key} className="message-date-divider">
+                <span>{getDateLabel(item.date)}</span>
               </div>
-            )}
+            );
+          }
+
+          const msg = item.data;
+          return (
             <MessageBubble
+              key={item.key}
               message={msg}
               isSent={msg.user_id === currentUserId}
-              isGroup={conversation?.type === 'group'}
-              isFirstInGroup={isFirstInGroup}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setContextMenu({
-                  x: e.clientX,
-                  y: e.clientY,
-                  message: msg,
-                });
-              }}
               onReply={() => onReply(msg)}
+              onDelete={(forEveryone) => chatHook.deleteMessage(msg.id, forEveryone)}
             />
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
 
-      {/* Context Menu */}
-      {contextMenu && (
-        <div
-          className="context-menu"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
-          onClick={e => e.stopPropagation()}
-        >
-          <div
-            className="context-menu-item"
-            onClick={() => {
-              onReply(contextMenu.message);
-              setContextMenu(null);
-            }}
-          >
-            ↩️ Reply
-          </div>
-          <div
-            className="context-menu-item"
-            onClick={() => {
-              navigator.clipboard.writeText(contextMenu.message.content || '');
-              setContextMenu(null);
-            }}
-          >
-            📋 Copy
-          </div>
-          {contextMenu.message.user_id === currentUserId && (
-            <>
-              <div
-                className="context-menu-item danger"
-                onClick={() => {
-                  onDelete(contextMenu.message.id, false);
-                  setContextMenu(null);
-                }}
-              >
-                🗑️ Delete for me
-              </div>
-              <div
-                className="context-menu-item danger"
-                onClick={() => {
-                  onDelete(contextMenu.message.id, true);
-                  setContextMenu(null);
-                }}
-              >
-                🗑️ Delete for everyone
-              </div>
-            </>
-          )}
-        </div>
+      {showScrollBottom && (
+        <button className="scroll-to-bottom" onClick={scrollToBottom} aria-label="Scroll to bottom">
+          ↓
+        </button>
       )}
-
-      <div ref={endRef} />
-    </div>
+    </>
   );
 };
 

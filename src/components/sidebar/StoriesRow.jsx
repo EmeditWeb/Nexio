@@ -1,83 +1,106 @@
 import { useState } from 'react';
-import { useAuth } from '../../contexts/AuthContext';
 import StoryViewer from '../chat/StoryViewer';
 import CreateStory from '../chat/CreateStory';
+import { useAuth } from '../../contexts/AuthContext';
 
 /**
- * StoriesRow — horizontal scrolling row of story avatars at top of sidebar.
+ * StoriesRow — horizontal scrollable story avatars with colored rings.
+ * Features:
+ * - "Add Story" button first
+ * - Gradient rings for unviewed stories (green/blue/pink)
+ * - Grey rings for viewed stories
+ * - Sorted by unviewed first, then time
  */
-const StoriesRow = ({ storiesHook }) => {
+const StoriesRow = ({ storiesHook, compact = false }) => {
   const { currentUser } = useAuth();
-  const { stories, myStories } = storiesHook;
-  const [viewingUser, setViewingUser] = useState(null);
+  const [viewingStory, setViewingStory] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
 
-  if (!stories.length && !myStories.length) {
-    return (
-      <div className="stories-row">
-        <div className="story-avatar-wrapper" onClick={() => setShowCreate(true)}>
-          <div className="story-avatar-ring add-story">
-            <div className="story-avatar-img flex-center" style={{ fontSize: '20px' }}>+</div>
-          </div>
-          <span className="story-username">My Status</span>
-        </div>
-      </div>
-    );
-  }
+  const { stories = [], myStories = [], viewStory, loading } = storiesHook || {};
+
+  // Current user's story status
+  const hasMyStory = myStories.length > 0;
+  const myLastStory = myStories[myStories.length - 1];
 
   return (
     <>
-      <div className="stories-row">
-        {/* Add story button */}
-        <div className="story-avatar-wrapper" onClick={() => setShowCreate(true)}>
-          <div className={`story-avatar-ring ${myStories.length > 0 ? '' : 'add-story'}`}>
-            <div
-              className="story-avatar-img"
-              style={
-                myStories.length > 0 && stories[0]?.user?.avatar_url
-                  ? { backgroundImage: `url(${stories[0].user.avatar_url})` }
-                  : { display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px' }
-              }
-            >
-              {myStories.length === 0 && '+'}
+      <div className={`stories-row ${compact ? '' : ''}`}>
+
+        {/* 1. Add Story / My Story Button */}
+        <div className="story-item" onClick={() => hasMyStory ? setViewingStory({ user: currentUser, stories: myStories }) : setShowCreate(true)}>
+          <div className={`story-avatar-wrapper ${hasMyStory ? 'has-story' : ''}`}>
+            {/* If I have a story, show my avatar with a grey ring (since I always view my own). 
+                 If no story, show avatar with + badge */}
+            <div className={`story-ring ${hasMyStory ? 'viewed' : ''}`}>
+              <div
+                className="story-avatar"
+                style={currentUser?.avatar_url ? { backgroundImage: `url(${currentUser.avatar_url})` } : {}}
+              >
+                {!currentUser?.avatar_url && (
+                  <div className="avatar-placeholder">{currentUser?.display_name?.[0]?.toUpperCase()}</div>
+                )}
+              </div>
             </div>
+
+            {!hasMyStory && (
+              <div className="story-add-badge">+</div>
+            )}
           </div>
-          <span className="story-username">My Status</span>
+          <span className="story-username">Your Story</span>
         </div>
 
-        {/* Other users' stories */}
-        {stories.filter(s => s.user.id !== currentUser?.id).map(storyGroup => (
-          <div
-            key={storyGroup.user.id}
-            className="story-avatar-wrapper"
-            onClick={() => setViewingUser(storyGroup)}
-          >
-            <div className={`story-avatar-ring ${storyGroup.hasUnviewed ? '' : 'viewed'}`}>
-              <div
-                className="story-avatar-img"
-                style={storyGroup.user.avatar_url
-                  ? { backgroundImage: `url(${storyGroup.user.avatar_url})` }
-                  : {}
-                }
-              />
+        {/* 2. Friends' Stories */}
+        {stories.map((group, i) => {
+          // Skip own story group since we handled it above
+          if (group.user.id === currentUser?.id) return null;
+
+          return (
+            <div
+              key={group.user.id}
+              className="story-item"
+              onClick={() => setViewingStory(group)}
+            >
+              <div className="story-avatar-wrapper">
+                <div className={`story-ring ${group.hasUnviewed ? 'unviewed' : 'viewed'}`}>
+                  <div
+                    className="story-avatar"
+                    style={group.user.avatar_url ? { backgroundImage: `url(${group.user.avatar_url})` } : {}}
+                  >
+                    {!group.user.avatar_url && (
+                      <div className="avatar-placeholder">{group.user?.display_name?.[0]?.toUpperCase() || '?'}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <span className="story-username">
+                {group.user?.display_name?.split(' ')[0] || group.user?.username || 'User'}
+              </span>
             </div>
-            <span className="story-username">{storyGroup.user.display_name}</span>
+          );
+        })}
+
+        {!compact && stories.length === 0 && !hasMyStory && !loading && (
+          <div className="stories-empty-hint">
+            👋 Share a moment!
           </div>
-        ))}
+        )}
       </div>
 
-      {viewingUser && (
+      {viewingStory && (
         <StoryViewer
-          storyGroup={viewingUser}
-          onClose={() => setViewingUser(null)}
-          onView={storiesHook.viewStory}
+          storyGroup={viewingStory}
+          onClose={() => setViewingStory(null)}
+          onViewed={viewStory}
+          isOwnStory={viewingStory.user.id === currentUser?.id}
+          onAddStory={() => { setViewingStory(null); setShowCreate(true); }}
         />
       )}
 
       {showCreate && (
         <CreateStory
           onClose={() => setShowCreate(false)}
-          onCreate={storiesHook.createStory}
+          onCreated={() => setShowCreate(false)}
+          storiesHook={storiesHook}
         />
       )}
     </>

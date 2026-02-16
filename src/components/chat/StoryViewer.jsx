@@ -1,139 +1,168 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { formatLastSeen } from '../../utils/dateUtils';
+import { STORY_DURATION_MS } from '../../utils/constants';
 
 /**
- * StoryViewer — full-screen overlay for viewing stories with progress bar.
+ * StoryViewer — Full-screen story overlay.
  */
-const StoryViewer = ({ storyGroup, onClose, onView }) => {
+const StoryViewer = ({ storyGroup, onClose, onViewed, isOwnStory, onAddStory }) => {
     const [currentIndex, setCurrentIndex] = useState(0);
     const [progress, setProgress] = useState(0);
-    const timerRef = useRef(null);
-    const stories = storyGroup.stories;
+    const progressRef = useRef(null);
+    const startTimeRef = useRef(null);
+    const pausedRef = useRef(false);
 
-    const STORY_DURATION = 5000; // 5 seconds per story
+    const stories = storyGroup?.stories || [];
+    const current = stories[currentIndex];
+    const user = storyGroup?.user || {};
 
+    // Start/Reset progress for current slide
     useEffect(() => {
-        if (!stories.length) return;
-
-        // Mark story as viewed
-        onView(stories[currentIndex].id);
-
-        // Progress animation
         setProgress(0);
-        const startTime = Date.now();
+        startTimeRef.current = Date.now();
+        pausedRef.current = false;
 
-        timerRef.current = setInterval(() => {
-            const elapsed = Date.now() - startTime;
-            const pct = Math.min((elapsed / STORY_DURATION) * 100, 100);
-            setProgress(pct);
+        const interval = setInterval(() => {
+            if (pausedRef.current) {
+                // Adjust start time to account for pause so it doesn't jump
+                startTimeRef.current += 50; 
+                return;
+            }
 
-            if (elapsed >= STORY_DURATION) {
-                clearInterval(timerRef.current);
-                // Move to next story or close
-                if (currentIndex < stories.length - 1) {
-                    setCurrentIndex(prev => prev + 1);
-                } else {
-                    onClose();
-                }
+            const elapsed = Date.now() - startTimeRef.current;
+            const p = Math.min((elapsed / STORY_DURATION_MS) * 100, 100);
+            setProgress(p);
+
+            if (p >= 100) {
+                clearInterval(interval);
+                handleNext();
             }
         }, 50);
 
-        return () => clearInterval(timerRef.current);
-    }, [currentIndex, stories, onView, onClose]);
+        progressRef.current = interval;
 
-    const goNext = () => {
-        clearInterval(timerRef.current);
+        // Mark as viewed
+        if (current && onViewed && !isOwnStory) {
+             onViewed(current.id);
+        }
+
+        return () => clearInterval(progressRef.current);
+    }, [currentIndex, current]); // Re-run when slide changes
+
+    const handleNext = useCallback(() => {
         if (currentIndex < stories.length - 1) {
             setCurrentIndex(prev => prev + 1);
         } else {
             onClose();
         }
-    };
+    }, [currentIndex, stories.length, onClose]);
 
-    const goPrev = () => {
-        clearInterval(timerRef.current);
+    const handlePrev = useCallback(() => {
         if (currentIndex > 0) {
             setCurrentIndex(prev => prev - 1);
+        } else {
+            // If at start, restart current or close? WhatsApp closes on pull down, but for tap left at start usually restarts or goes to prev user.
+            // For now, let's just restart the slide if < 0.5s elapsed, else go to 0
+            setCurrentIndex(0);
+            setProgress(0);
+            startTimeRef.current = Date.now();
         }
-    };
+    }, [currentIndex]);
 
-    const current = stories[currentIndex];
+    const handleTap = useCallback((e) => {
+        const width = window.innerWidth;
+        const x = e.clientX;
+        
+        // Tap left 30% goes back, right 70% goes forward
+        if (x < width * 0.3) {
+            handlePrev();
+        } else {
+            handleNext();
+        }
+    }, [handlePrev, handleNext]);
+
     if (!current) return null;
 
-    const formatTime = (ts) => {
-        const date = new Date(ts);
-        const now = new Date();
-        const diff = now - date;
-        if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-        if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-        return date.toLocaleDateString();
-    };
-
     return (
-        <div className="story-viewer-overlay" onClick={onClose}>
-            <div className="story-viewer" onClick={e => e.stopPropagation()}>
-                {/* Progress bars */}
-                <div className="story-progress-bar">
-                    {stories.map((_, idx) => (
-                        <div className="story-progress-segment" key={idx}>
-                            <div
+        <div 
+            className="story-viewer-overlay" 
+            onClick={handleTap}
+            // Simple hold to pause
+            onMouseDown={() => { pausedRef.current = true; }}
+            onMouseUp={() => { pausedRef.current = false; }}
+            onTouchStart={() => { pausedRef.current = true; }}
+            onTouchEnd={() => { pausedRef.current = false; }}
+        >
+            <div className="story-content-wrapper">
+                
+                {/* 1. Progress Bars */}
+                <div className="story-progress-container">
+                    {stories.map((_, i) => (
+                        <div key={i} className="story-progress-bg">
+                            <div 
                                 className="story-progress-fill"
-                                style={{
-                                    width: idx < currentIndex ? '100%'
-                                        : idx === currentIndex ? `${progress}%`
-                                            : '0%',
+                                style={{ 
+                                    width: i < currentIndex ? '100%' : i === currentIndex ? `${progress}%` : '0%'
                                 }}
                             />
                         </div>
                     ))}
                 </div>
 
-                {/* Header */}
-                <div className="story-header">
-                    <div
+                {/* 2. Header */}
+                <div className="story-header" onClick={e => e.stopPropagation()}>
+                    <button className="icon-btn back-btn" onClick={onClose} style={{marginRight: 8}}>←</button>
+                    <div 
                         className="story-header-avatar"
-                        style={storyGroup.user.avatar_url
-                            ? { backgroundImage: `url(${storyGroup.user.avatar_url})` }
-                            : { backgroundColor: 'var(--bg-hover)' }
-                        }
-                    />
-                    <div style={{ flex: 1 }}>
-                        <div className="story-header-name">{storyGroup.user.display_name}</div>
-                        <div className="story-header-time">{formatTime(current.created_at)}</div>
+                        style={user.avatar_url ? { backgroundImage: `url(${user.avatar_url})` } : {}}
+                    >
+                         {!user.avatar_url && user.display_name?.[0]}
                     </div>
-                    <button className="icon-btn" onClick={onClose} style={{ color: 'white' }}>✕</button>
+                    <div className="story-header-info">
+                        <div className="story-header-name">{user.display_name || user.username}</div>
+                        <div className="story-header-time">{formatLastSeen(current.created_at)}</div>
+                    </div>
+                    
+                    {/* Actions */}
+                    <div className="story-header-actions">
+                        {isOwnStory && (
+                            <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onAddStory(); }}>
+                                ➕
+                            </button>
+                        )}
+                        <button className="icon-btn" onClick={onClose}>✕</button>
+                    </div>
                 </div>
 
-                {/* Story content — click left/right to navigate */}
-                <div className="story-content" style={{ position: 'relative' }}>
-                    {/* Left tap area */}
-                    <div
-                        style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '30%', cursor: 'pointer' }}
-                        onClick={goPrev}
-                    />
-                    {/* Right tap area */}
-                    <div
-                        style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: '30%', cursor: 'pointer' }}
-                        onClick={goNext}
-                    />
-
+                {/* 3. Media Content */}
+                <div className="story-media-container">
                     {current.media_url ? (
-                        <img src={current.media_url} alt="Story" className="story-image-content" />
+                        <img 
+                            src={current.media_url} 
+                            className="story-image" 
+                            alt="Story" 
+                        />
                     ) : (
-                        <div className="story-text-content">{current.content}</div>
+                        <div className="story-text-bg">
+                            <p className="story-text">{current.content}</p>
+                        </div>
                     )}
                 </div>
-
-                {/* View count for own stories */}
-                {current.story_views && (
-                    <div style={{
-                        padding: '8px 16px',
-                        textAlign: 'center',
-                        fontSize: '13px',
-                        color: 'rgba(255,255,255,0.6)',
-                    }}>
-                        👁 {current.story_views.length} views
-                    </div>
-                )}
+            
+                {/* 4. Footer / Reply (for friends) or Views (for me) */}
+                <div className="story-footer" onClick={e => e.stopPropagation()}>
+                    {!isOwnStory ? (
+                         <div className="story-reply-bar">
+                            <input type="text" placeholder="Reply..." className="story-reply-input" />
+                            <button className="icon-btn">❤️</button>
+                            <button className="icon-btn">😂</button>
+                         </div>
+                    ) : (
+                        <div className="story-views-bar">
+                             <span role="img" aria-label="views">👁️</span> {current.story_views?.length || 0} views
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     );

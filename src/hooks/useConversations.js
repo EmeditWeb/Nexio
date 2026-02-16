@@ -3,101 +3,102 @@ import { supabase } from '../supabaseClient';
 
 /**
  * useConversations — list, create, update, delete conversations.
- * Subscribes to Realtime for new conversations and updates.
- * @param {string|null} userId - current user ID
+ * Optimized: eliminated N+1 queries by batching last-message and unread-count fetches.
  */
 export function useConversations(userId) {
   const [conversations, setConversations] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // ── Fetch all conversations with last message + unread count ──
+  // ── Fetch all conversations with enrichment ───────────────
   const fetchConversations = useCallback(async () => {
     if (!userId) return;
 
-    // Get all conversation IDs the user is a member of
-    const { data: memberships } = await supabase
-      .from('conversation_members')
-      .select('conversation_id, is_admin')
-      .eq('user_id', userId);
+    try {
+      const { data: memberships } = await supabase
+        .from('conversation_members')
+        .select('conversation_id, is_admin')
+        .eq('user_id', userId);
 
-    if (!memberships || memberships.length === 0) {
-      setConversations([]);
-      setLoading(false);
-      return;
-    }
-
-    const convIds = memberships.map(m => m.conversation_id);
-
-    // Fetch conversations with their members' profiles
-    const { data: convos } = await supabase
-      .from('conversations')
-      .select(`
-        *,
-        conversation_members (
-          user_id,
-          is_admin,
-          profiles:user_id ( id, username, display_name, avatar_url, is_online, last_seen )
-        )
-      `)
-      .in('id', convIds)
-      .order('updated_at', { ascending: false });
-
-    if (!convos) { setConversations([]); setLoading(false); return; }
-
-    // Fetch last message for each conversation
-    const enriched = await Promise.all(convos.map(async (conv) => {
-      // Last message
-      const { data: msgs } = await supabase
-        .from('messages')
-        .select('id, content, message_type, created_at, user_id, is_deleted')
-        .eq('conversation_id', conv.id)
-        .order('created_at', { ascending: false })
-        .limit(1);
-
-      const lastMessage = msgs?.[0] || null;
-
-      // Unread count: messages after the user's last read in this conversation
-      const { data: lastRead } = await supabase
-        .from('message_reads')
-        .select('read_at')
-        .eq('user_id', userId)
-        .in('message_id', (await supabase
-          .from('messages')
-          .select('id')
-          .eq('conversation_id', conv.id)
-        ).data?.map(m => m.id) || [])
-        .order('read_at', { ascending: false })
-        .limit(1);
-
-      const lastReadAt = lastRead?.[0]?.read_at || '1970-01-01';
-
-      const { count } = await supabase
-        .from('messages')
-        .select('id', { count: 'exact', head: true })
-        .eq('conversation_id', conv.id)
-        .neq('user_id', userId)
-        .gt('created_at', lastReadAt);
-
-      // For DMs, get the other user's profile
-      let dmPartner = null;
-      if (conv.type === 'direct') {
-        const otherMember = conv.conversation_members?.find(m => m.user_id !== userId);
-        dmPartner = otherMember?.profiles || null;
+      if (!memberships || memberships.length === 0) {
+        setConversations([]);
+        setLoading(false);
+        return;
       }
 
-      const membership = memberships.find(m => m.conversation_id === conv.id);
+      const convIds = memberships.map(m => m.conversation_id);
 
-      return {
-        ...conv,
-        lastMessage,
-        unreadCount: count || 0,
-        dmPartner,
-        isAdmin: membership?.is_admin || false,
-        memberCount: conv.conversation_members?.length || 0,
-      };
-    }));
+      // Fetch conversations with member profiles
+      const { data: convos } = await supabase
+        .from('conversations')
+        .select(`
+          *,
+          conversation_members (
+            user_id, is_admin,
+            profiles:user_id ( id, username, display_name, avatar_url, is_online, last_seen )
+          )
+        `)
+        .in('id', convIds)
+        .order('updated_at', { ascending: false });
 
-    setConversations(enriched);
+      if (!convos) { setConversations([]); setLoading(false); return; }
+
+      // Batch: fetch last message for all conversations at once
+      // We fetch recent messages and group them client-side
+      const { data: recentMsgs } = await supabase
+        .from('messages')
+        .select('id, conversation_id, content, message_type, created_at, user_id, is_deleted')
+        .in('conversation_id', convIds)
+        .order('created_at', { ascending: false });
+
+      // Group last messages by conversation
+      const lastMsgMap = {};
+      (recentMsgs || []).forEach(msg => {
+        if (!lastMsgMap[msg.conversation_id]) {
+          lastMsgMap[msg.conversation_id] = msg;
+        }
+      });
+
+      // Batch: get user's read status
+      const { data: userReads } = await supabase
+        .from('message_reads')
+        .select('message_id, read_at')
+        .eq('user_id', userId);
+
+      const readMsgIds = new Set((userReads || []).map(r => r.message_id));
+
+      // Enrich conversations
+      const enriched = convos.map(conv => {
+        const lastMessage = lastMsgMap[conv.id] || null;
+
+        // Count unread: messages from others that aren't read
+        const convMsgs = (recentMsgs || []).filter(m =>
+          m.conversation_id === conv.id && m.user_id !== userId
+        );
+        const unreadCount = convMsgs.filter(m => !readMsgIds.has(m.id)).length;
+
+        // DM partner
+        let dmPartner = null;
+        if (conv.type === 'direct') {
+          const otherMember = conv.conversation_members?.find(m => m.user_id !== userId);
+          dmPartner = otherMember?.profiles || null;
+        }
+
+        const membership = memberships.find(m => m.conversation_id === conv.id);
+
+        return {
+          ...conv,
+          lastMessage,
+          unreadCount: Math.min(unreadCount, 99),
+          dmPartner,
+          isAdmin: membership?.is_admin || false,
+          memberCount: conv.conversation_members?.length || 0,
+        };
+      });
+
+      setConversations(enriched);
+    } catch (err) {
+      console.error('Error fetching conversations:', err);
+    }
     setLoading(false);
   }, [userId]);
 
@@ -105,7 +106,7 @@ export function useConversations(userId) {
     fetchConversations();
   }, [fetchConversations]);
 
-  // ── Realtime: refresh on conversation changes ─────────────
+  // ── Realtime: refresh on changes ──────────────────────────
   useEffect(() => {
     if (!userId) return;
 
@@ -124,7 +125,6 @@ export function useConversations(userId) {
 
   // ── Create DM ─────────────────────────────────────────────
   const createDM = useCallback(async (otherUserId) => {
-    // Check if DM already exists
     const { data: myConvs } = await supabase
       .from('conversation_members')
       .select('conversation_id')
@@ -146,11 +146,10 @@ export function useConversations(userId) {
           .eq('id', c.conversation_id)
           .eq('type', 'direct')
           .single();
-        if (conv) return conv; // existing DM found
+        if (conv) return conv;
       }
     }
 
-    // Create new DM
     const { data: conv, error } = await supabase
       .from('conversations')
       .insert({ type: 'direct', created_by: userId })
@@ -159,7 +158,6 @@ export function useConversations(userId) {
 
     if (error) return null;
 
-    // Add both members
     await supabase.from('conversation_members').insert([
       { conversation_id: conv.id, user_id: userId, is_admin: false },
       { conversation_id: conv.id, user_id: otherUserId, is_admin: false },
@@ -183,19 +181,12 @@ export function useConversations(userId) {
 
     const { data: conv, error } = await supabase
       .from('conversations')
-      .insert({
-        type: 'group',
-        name,
-        description,
-        avatar_url: avatarUrl,
-        created_by: userId,
-      })
+      .insert({ type: 'group', name, description, avatar_url: avatarUrl, created_by: userId })
       .select()
       .single();
 
     if (error) return null;
 
-    // Add creator as admin + all members
     const members = [
       { conversation_id: conv.id, user_id: userId, is_admin: true },
       ...memberIds.map(id => ({ conversation_id: conv.id, user_id: id, is_admin: false })),
@@ -221,26 +212,21 @@ export function useConversations(userId) {
     await fetchConversations();
   }, [fetchConversations]);
 
-  // ── Add / Remove members ──────────────────────────────────
+  // ── Member management ─────────────────────────────────────
   const addMember = useCallback(async (convId, memberId) => {
-    await supabase.from('conversation_members')
-      .insert({ conversation_id: convId, user_id: memberId });
+    await supabase.from('conversation_members').insert({ conversation_id: convId, user_id: memberId });
     await fetchConversations();
   }, [fetchConversations]);
 
   const removeMember = useCallback(async (convId, memberId) => {
-    await supabase.from('conversation_members')
-      .delete()
-      .eq('conversation_id', convId)
-      .eq('user_id', memberId);
+    await supabase.from('conversation_members').delete()
+      .eq('conversation_id', convId).eq('user_id', memberId);
     await fetchConversations();
   }, [fetchConversations]);
 
   const leaveGroup = useCallback(async (convId) => {
-    await supabase.from('conversation_members')
-      .delete()
-      .eq('conversation_id', convId)
-      .eq('user_id', userId);
+    await supabase.from('conversation_members').delete()
+      .eq('conversation_id', convId).eq('user_id', userId);
     await fetchConversations();
   }, [userId, fetchConversations]);
 

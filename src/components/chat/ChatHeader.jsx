@@ -1,95 +1,88 @@
-import { useAuth } from '../../contexts/AuthContext';
+import { useState } from 'react';
+import { formatLastSeen } from '../../utils/dateUtils';
+import GroupInfoPanel from './GroupInfoPanel';
 
 /**
- * ChatHeader — name, avatar, online status, typing indicator.
+ * ChatHeader — avatar, name, online/typing status, action icons.
  */
-const ChatHeader = ({ conversation, presenceHook, onBack, onOpenGroupInfo }) => {
-  const { currentUser } = useAuth();
-  const conv = conversation;
-  if (!conv) return null;
+const ChatHeader = ({ conversation, presenceHook, onBack, convHook }) => {
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
+  if (!conversation) return null;
 
-  let name, avatarUrl, statusText;
+  const isGroup = conversation.type === 'group';
+  const name = isGroup ? conversation.name : conversation.dmPartner?.display_name || 'Unknown';
+  const avatarUrl = isGroup ? conversation.avatar_url : conversation.dmPartner?.avatar_url;
+  const isOnline = !isGroup && conversation.dmPartner?.is_online;
+  /* 1. Fix Typing Logic */
+  const typingUserSet = presenceHook?.typingUsers?.[conversation.id] || new Set();
+  const isTyping = typingUserSet.size > 0;
 
-  if (conv.type === 'direct') {
-    const partner = conv.dmPartner;
-    name = partner?.display_name || 'Unknown';
-    avatarUrl = partner?.avatar_url;
+  let statusText = '';
+  if (isTyping) {
+    // Convert Set of IDs to array of names
+    const typingNames = [];
+    typingUserSet.forEach(userId => {
+      // Find member in conversation members
+      const member = conversation.conversation_members?.find(m => m.user_id === userId);
+      if (member?.profiles?.display_name) typingNames.push(member.profiles.display_name);
+      else typingNames.push('Someone');
+    });
 
-    // Typing indicator
-    const typingInConv = presenceHook.getTypingInConversation(conv.id);
-    if (typingInConv.length > 0) {
-      statusText = 'typing...';
-    } else if (partner && presenceHook.isUserOnline(partner.id)) {
-      statusText = 'online';
-    } else if (partner?.last_seen) {
-      const lastSeen = new Date(partner.last_seen);
-      const now = new Date();
-      const diff = now - lastSeen;
-      if (diff < 60000) statusText = 'last seen just now';
-      else if (diff < 3600000) statusText = `last seen ${Math.floor(diff / 60000)}m ago`;
-      else if (diff < 86400000) statusText = `last seen ${Math.floor(diff / 3600000)}h ago`;
-      else statusText = `last seen ${lastSeen.toLocaleDateString()}`;
-    }
-  } else {
-    name = conv.name || 'Group';
-    avatarUrl = conv.avatar_url;
-
-    // Group: show typing or member count
-    const typingInConv = presenceHook.getTypingInConversation(conv.id);
-    if (typingInConv.length > 0) {
-      // Find who's typing
-      const typingNames = typingInConv.map(uid => {
-        const member = conv.conversation_members?.find(m => m.user_id === uid);
-        return member?.profiles?.display_name || 'Someone';
-      });
-      statusText = `${typingNames.join(', ')} typing...`;
-    } else {
-      statusText = `${conv.memberCount} members`;
-    }
+    statusText = typingNames.length === 1
+      ? `${typingNames[0]} is typing`
+      : `${typingNames.join(', ')} are typing`;
+  } else if (isGroup) {
+    statusText = `${conversation.memberCount} members`;
+  } else if (isOnline) {
+    statusText = 'online';
+  } else if (conversation.dmPartner?.last_seen) {
+    statusText = formatLastSeen(conversation.dmPartner.last_seen);
   }
 
-  const isTyping = statusText === 'typing...' || statusText?.includes('typing...');
-
   return (
-    <div className="chat-header">
-      {/* Back button for mobile */}
-      <button className="icon-btn" onClick={onBack} style={{ display: 'none' }}>
-        ←
-      </button>
+    <>
+      <div className="chat-header">
+        {/* 2. Fix Back Button Visibility (controlled by CSS now) */}
+        <button className="icon-btn back-btn" onClick={onBack}>←</button>
 
-      <div
-        className="chat-header-avatar"
-        style={avatarUrl ? { backgroundImage: `url(${avatarUrl})` } : {}}
-        onClick={conv.type === 'group' ? onOpenGroupInfo : undefined}
-      >
-        {!avatarUrl && (
-          <div className="flex-center" style={{
-            width: '100%', height: '100%', borderRadius: '50%',
-            fontSize: '18px', color: 'var(--text-secondary)',
-          }}>
-            {conv.type === 'group' ? '👥' : name?.[0]?.toUpperCase() || '?'}
+        <div
+          className="chat-header-avatar"
+          style={avatarUrl ? { backgroundImage: `url(${avatarUrl})` } : {}}
+          onClick={() => isGroup && setShowGroupInfo(true)}
+        >
+          {!avatarUrl && (
+            <div className="flex-center" style={{ width: '100%', height: '100%', borderRadius: '50%', fontSize: '16px', color: 'var(--text-secondary)' }}>
+              {isGroup ? '👥' : name[0]?.toUpperCase() || '?'}
+            </div>
+          )}
+        </div>
+
+        <div className="chat-header-info" onClick={() => isGroup && setShowGroupInfo(true)}>
+          <div className="chat-header-name">{name}</div>
+          <div className={`chat-header-status ${isTyping ? 'typing' : ''} ${isOnline && !isTyping ? 'online' : ''}`}>
+            {isTyping ? (
+              <span>
+                {statusText} <span className="typing-dots"><span /><span /><span /></span>
+              </span>
+            ) : statusText}
           </div>
-        )}
+        </div>
+
+        <div className="chat-header-actions">
+          <button className="icon-btn" title="Voice call">📞</button>
+          <button className="icon-btn" title="Video call">📹</button>
+          <button className="icon-btn" title="More options">⋮</button>
+        </div>
       </div>
 
-      <div
-        className="chat-header-info"
-        onClick={conv.type === 'group' ? onOpenGroupInfo : undefined}
-      >
-        <div className="chat-header-name">{name}</div>
-        {statusText && (
-          <div className={`chat-header-status ${isTyping ? 'typing' : ''}`}>
-            {statusText}
-          </div>
-        )}
-      </div>
-
-      {conv.type === 'group' && (
-        <button className="icon-btn" onClick={onOpenGroupInfo} title="Group Info">
-          ℹ️
-        </button>
+      {showGroupInfo && (
+        <GroupInfoPanel
+          conversation={conversation}
+          onClose={() => setShowGroupInfo(false)}
+          convHook={convHook}
+        />
       )}
-    </div>
+    </>
   );
 };
 

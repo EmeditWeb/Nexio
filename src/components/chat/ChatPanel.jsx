@@ -1,28 +1,31 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useChat } from '../../hooks/useChat';
 import ChatHeader from './ChatHeader';
 import MessageList from './MessageList';
 import MessageInput from './MessageInput';
-import GroupInfoPanel from './GroupInfoPanel';
 
 /**
- * ChatPanel — right panel showing the active conversation or empty state.
+ * ChatPanel — right panel showing active conversation or empty state.
+ * Fixes:
+ * - Manages replyTo state
+ * - Passes replyTo state to MessageInput
+ * - Receives onReply from MessageList
  */
 const ChatPanel = ({ className = '', conversation, conversationId, presenceHook, convHook, onBack }) => {
   const { currentUser } = useAuth();
-  const chatHook = useChat(conversationId, currentUser?.id);
+  const userId = currentUser?.id;
+  const chatHook = useChat(conversationId, userId);
 
-  const [showGroupInfo, setShowGroupInfo] = useState(false);
   const [replyTo, setReplyTo] = useState(null);
 
   if (!conversationId) {
     return (
       <div className={`chat-panel ${className}`}>
         <div className="chat-empty">
-          <div style={{ fontSize: '64px', marginBottom: '8px' }}>💬</div>
-          <h2>Nexio</h2>
-          <p>Send and receive messages in real-time. Select a chat from the sidebar or start a new conversation.</p>
+          <div className="chat-empty-icon">💬</div>
+          <h2>Welcome to Nexio</h2>
+          <p>Select a conversation to start chatting, or create a new one from the sidebar.</p>
         </div>
       </div>
     );
@@ -34,35 +37,26 @@ const ChatPanel = ({ className = '', conversation, conversationId, presenceHook,
         conversation={conversation}
         presenceHook={presenceHook}
         onBack={onBack}
-        onOpenGroupInfo={() => setShowGroupInfo(true)}
+        convHook={convHook}
       />
-
       <MessageList
         messages={chatHook.messages}
         loading={chatHook.loading}
-        currentUserId={currentUser?.id}
-        conversation={conversation}
-        onReply={setReplyTo}
-        onDelete={chatHook.deleteMessage}
-        onMarkAsRead={chatHook.markAsRead}
-      />
-
-      <MessageInput
-        onSend={chatHook.sendMessage}
-        onSendImage={chatHook.sendImage}
-        replyTo={replyTo}
-        onCancelReply={() => setReplyTo(null)}
-        presenceHook={presenceHook}
+        loadingMore={chatHook.loadingMore}
+        hasMore={chatHook.hasMore}
+        onLoadMore={chatHook.loadMore}
+        currentUserId={userId}
         conversationId={conversationId}
+        chatHook={chatHook}
+        onReply={(msg) => setReplyTo(msg)}
       />
-
-      {showGroupInfo && conversation?.type === 'group' && (
-        <GroupInfoPanel
-          conversation={conversation}
-          convHook={convHook}
-          onClose={() => setShowGroupInfo(false)}
-        />
-      )}
+      <MessageInput
+        conversationId={conversationId}
+        onSend={chatHook.sendMessage}
+        sending={chatHook.sending}
+        replyTo={replyTo}
+        onClearReply={() => setReplyTo(null)}
+      />
     </div>
   );
 };

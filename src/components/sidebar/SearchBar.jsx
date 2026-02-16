@@ -1,26 +1,43 @@
+import { useState, useRef, useCallback } from 'react';
+
 /**
- * SearchBar — search conversations and users.
+ * SearchBar — debounced search with minimum 2 chars and spinner.
  */
-const SearchBar = ({ value, onChange }) => {
+const SearchBar = ({ onSearch }) => {
+  const [value, setValue] = useState('');
+  const [searching, setSearching] = useState(false);
+  const timerRef = useRef(null);
+
+  const handleChange = useCallback((e) => {
+    const val = e.target.value;
+    setValue(val);
+
+    if (val.length >= 2) {
+      setSearching(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        onSearch(val);
+        setSearching(false);
+      }, 300);
+    } else {
+      onSearch('');
+      setSearching(false);
+    }
+  }, [onSearch]);
+
   return (
     <div className="search-container">
       <div className="search-input-wrapper">
-        <span>🔍</span>
+        <span style={{ fontSize: '14px', color: 'var(--text-muted)' }}>🔍</span>
         <input
           className="search-input"
           type="text"
-          placeholder="Search or start new chat"
+          placeholder="Search conversations..."
           value={value}
-          onChange={e => onChange(e.target.value)}
+          onChange={handleChange}
+          aria-label="Search conversations"
         />
-        {value && (
-          <span
-            style={{ cursor: 'pointer', fontSize: '14px' }}
-            onClick={() => onChange('')}
-          >
-            ✕
-          </span>
-        )}
+        {searching && <div className="search-spinner" />}
       </div>
     </div>
   );

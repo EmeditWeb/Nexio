@@ -1,17 +1,22 @@
 import { useState } from 'react';
+import { formatMessageTime } from '../../utils/dateUtils';
 import ImagePreview from './ImagePreview';
 
 /**
- * MessageBubble — single message with content, reply quote, timestamps,
- * read receipts, sender name in groups, and image support.
+ * MessageBubble — sent/received message with gradient, read receipts, reply quote, context menu.
  */
-const MessageBubble = ({ message, isSent, isGroup, isFirstInGroup, onContextMenu, onReply }) => {
-  const [showImagePreview, setShowImagePreview] = useState(false);
+const MessageBubble = ({ message, isSent, onReply, onDelete }) => {
+  const [showMenu, setShowMenu] = useState(false);
+  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
+  const [showImage, setShowImage] = useState(false);
 
-  const formatTime = (ts) => {
-    if (!ts) return '';
-    return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const handleContextMenu = (e) => {
+    e.preventDefault();
+    setMenuPos({ x: e.clientX, y: e.clientY });
+    setShowMenu(true);
   };
+
+  const closeMenu = () => setShowMenu(false);
 
   // Deleted message
   if (message.is_deleted) {
@@ -20,44 +25,43 @@ const MessageBubble = ({ message, isSent, isGroup, isFirstInGroup, onContextMenu
         <div className={`message-bubble ${isSent ? 'sent' : 'received'}`}>
           <span className="message-deleted">🚫 This message was deleted</span>
           <div className="message-meta">
-            <span className="message-time">{formatTime(message.created_at)}</span>
+            <span className="message-time">{formatMessageTime(message.created_at)}</span>
           </div>
         </div>
       </div>
     );
   }
 
+  // Sender name for group messages
+  const senderName = !isSent && message.sender?.display_name;
+
   return (
     <>
-      <div
-        className={`message-wrapper ${isSent ? 'sent' : 'received'}`}
-        onContextMenu={onContextMenu}
-      >
-        <div className={`message-bubble ${isSent ? 'sent' : 'received'} ${isFirstInGroup ? 'first-in-group' : ''}`}>
-          {/* Sender name in groups */}
-          {isGroup && !isSent && isFirstInGroup && message.sender && (
-            <div className="message-sender-name">
-              {message.sender.display_name || message.sender.username}
-            </div>
-          )}
+      <div className={`message-wrapper ${isSent ? 'sent' : 'received'} ${message._optimistic ? 'message-sending' : ''}`}>
+        <div
+          className={`message-bubble ${isSent ? 'sent' : 'received'}`}
+          onContextMenu={handleContextMenu}
+        >
+          {senderName && <div className="message-sender-name">{senderName}</div>}
 
           {/* Reply quote */}
           {message.reply_message && (
             <div className="message-reply-quote">
               <div className="message-reply-quote-author">
-                {message.reply_message.user_id === message.user_id ? 'You' : ''}
+                {message.reply_message.user_id === message.user_id ? 'You' : 'Reply'}
               </div>
-              <div>{message.reply_message.content || '📷 Photo'}</div>
+              {message.reply_message.message_type === 'image' ? '📷 Photo' : message.reply_message.content}
             </div>
           )}
 
-          {/* Image */}
+          {/* Image message */}
           {message.message_type === 'image' && message.media_url && (
             <img
+              className="message-image"
               src={message.media_url}
               alt="Shared"
-              className="message-image"
-              onClick={() => setShowImagePreview(true)}
+              loading="lazy"
+              onClick={() => setShowImage(true)}
             />
           )}
 
@@ -66,22 +70,46 @@ const MessageBubble = ({ message, isSent, isGroup, isFirstInGroup, onContextMenu
             <span className="message-content">{message.content}</span>
           )}
 
-          {/* Meta: time + ticks */}
           <div className="message-meta">
-            <span className="message-time">{formatTime(message.created_at)}</span>
+            <span className="message-time">{formatMessageTime(message.created_at)}</span>
             {isSent && (
-              <span className="message-ticks">✓✓</span>
+              <span className={`message-ticks ${message.read ? 'read' : ''}`}>
+                {message._optimistic ? '⏳' : message.read ? '✓✓' : '✓'}
+              </span>
             )}
           </div>
         </div>
       </div>
 
-      {/* Full-size image viewer */}
-      {showImagePreview && message.media_url && (
-        <ImagePreview
-          src={message.media_url}
-          onClose={() => setShowImagePreview(false)}
-        />
+      {/* Context Menu */}
+      {showMenu && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 99 }} onClick={closeMenu} />
+          <div className="context-menu" style={{ left: menuPos.x, top: menuPos.y }}>
+            <div className="context-menu-item" onClick={() => { onReply(); closeMenu(); }}>
+              ↩️ Reply
+            </div>
+            <div className="context-menu-item" onClick={() => {
+              navigator.clipboard.writeText(message.content || '');
+              closeMenu();
+            }}>
+              📋 Copy
+            </div>
+            {isSent && (
+              <div className="context-menu-item danger" onClick={() => { onDelete(true); closeMenu(); }}>
+                🗑️ Delete for everyone
+              </div>
+            )}
+            <div className="context-menu-item danger" onClick={() => { onDelete(false); closeMenu(); }}>
+              🗑️ Delete for me
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Image Lightbox */}
+      {showImage && (
+        <ImagePreview src={message.media_url} onClose={() => setShowImage(false)} />
       )}
     </>
   );

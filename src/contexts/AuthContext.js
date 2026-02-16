@@ -14,59 +14,60 @@ export function AuthProvider({ children }) {
 
   // ── Fetch profile from DB ─────────────────────────────────
   const fetchProfile = async (userId) => {
-    const { data } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
-    return data;
+    try {
+      const { data } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+      return data;
+    } catch {
+      return null;
+    }
   };
 
   useEffect(() => {
     let mounted = true;
 
-    // Check active session
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (!mounted) return;
-      const user = session?.user ?? null;
-      setCurrentUser(user);
-
-      if (user) {
-        const prof = await fetchProfile(user.id);
-        if (mounted) setProfile(prof);
-      }
-      setLoading(false);
-    }).catch(() => {
-      if (mounted) setLoading(false);
-    });
-
-    // Timeout fallback
-    setTimeout(() => { if (mounted) setLoading(false); }, 3000);
-
-    // Listen for auth changes
+    // Use onAuthStateChange as the single source of truth.
+    // It fires with INITIAL_SESSION on mount (replaces getSession),
+    // and SIGNED_IN / SIGNED_OUT / TOKEN_REFRESHED during the session.
     const { data: listener } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
+      async (event, session) => {
+        if (!mounted) return;
+
         const user = session?.user ?? null;
         setCurrentUser(user);
 
         if (user) {
+          // Fetch profile only once per auth event
           const prof = await fetchProfile(user.id);
-          setProfile(prof);
+          if (mounted) {
+            setProfile(prof);
+            setLoading(false);
+          }
         } else {
           setProfile(null);
+          if (mounted) setLoading(false);
         }
-        setLoading(false);
       }
     );
 
+    // Safety timeout — if onAuthStateChange never fires (unlikely),
+    // stop blocking the UI after 5 seconds.
+    const timeout = setTimeout(() => {
+      if (mounted && loading) setLoading(false);
+    }, 5000);
+
     return () => {
       mounted = false;
+      clearTimeout(timeout);
       listener.subscription.unsubscribe();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const logout = async () => {
-    // Go offline
     if (currentUser) {
       await supabase.from('profiles').update({
         is_online: false,
@@ -86,7 +87,6 @@ export function AuthProvider({ children }) {
 
   const deleteAccount = async () => {
     if (currentUser) {
-      // Delete profile (cascades to messages via FK)
       await supabase.from('profiles').delete().eq('id', currentUser.id);
       await supabase.auth.signOut();
       setProfile(null);

@@ -1,229 +1,95 @@
-import { useState, useCallback } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { useProfile } from '../../hooks/useProfile';
 
 /**
- * GroupInfoPanel — slide-in panel showing group details, members, and admin controls.
+ * GroupInfoPanel — overlay showing group details, members, and management actions.
  */
-const GroupInfoPanel = ({ conversation, convHook, onClose }) => {
+const GroupInfoPanel = ({ conversation, onClose, convHook }) => {
   const { currentUser } = useAuth();
-  const { searchUsers } = useProfile(currentUser?.id);
-  const conv = conversation;
+  const members = conversation?.conversation_members || [];
+  const isAdmin = conversation?.isAdmin;
 
-  const [showAddMember, setShowAddMember] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
-  const [editingName, setEditingName] = useState(false);
-  const [groupName, setGroupName] = useState(conv?.name || '');
-  const [confirmLeave, setConfirmLeave] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-
-  const members = conv?.conversation_members || [];
-  const isAdmin = conv?.isAdmin;
-
-  const handleSearch = useCallback(async (q) => {
-    setSearchQuery(q);
-    if (q.length < 2) { setSearchResults([]); return; }
-    const users = await searchUsers(q);
-    const memberIds = new Set(members.map(m => m.user_id));
-    setSearchResults(users.filter(u => !memberIds.has(u.id)));
-  }, [searchUsers, members]);
-
-  const handleAddMember = async (userId) => {
-    await convHook.addMember(conv.id, userId);
-    setShowAddMember(false);
-    setSearchQuery('');
-    setSearchResults([]);
-  };
-
-  const handleRemoveMember = async (userId) => {
-    await convHook.removeMember(conv.id, userId);
-  };
-
-  const handleUpdateName = async () => {
-    if (groupName.trim() && groupName !== conv.name) {
-      await convHook.updateGroup(conv.id, { name: groupName.trim() });
+  const handleRemoveMember = async (memberId) => {
+    if (window.confirm('Remove this member from the group?')) {
+      await convHook.removeMember(conversation.id, memberId);
     }
-    setEditingName(false);
   };
 
   const handleLeave = async () => {
-    await convHook.leaveGroup(conv.id);
-    onClose();
+    if (window.confirm('Are you sure you want to leave this group?')) {
+      await convHook.leaveGroup(conversation.id);
+      onClose();
+    }
   };
 
   const handleDelete = async () => {
-    await convHook.deleteGroup(conv.id);
-    onClose();
+    if (window.confirm('Delete this group for everyone? This cannot be undone.')) {
+      await convHook.deleteGroup(conversation.id);
+      onClose();
+    }
   };
 
   return (
-    <div className="group-info-panel">
-      <div className="group-info-header">
-        <button className="icon-btn" onClick={onClose}>✕</button>
-        <h3>Group Info</h3>
-      </div>
-
-      {/* Group avatar */}
-      <div
-        className="group-info-avatar"
-        style={conv?.avatar_url ? { backgroundImage: `url(${conv.avatar_url})` } : {}}
-      >
-        {!conv?.avatar_url && (
-          <div className="flex-center" style={{ width: '100%', height: '100%', fontSize: '36px', color: 'var(--text-secondary)' }}>
-            👥
-          </div>
-        )}
-      </div>
-
-      {/* Group name */}
-      <div className="group-info-name">
-        {editingName ? (
-          <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
-            <input
-              className="modal-input"
-              style={{ marginBottom: 0, maxWidth: '200px' }}
-              value={groupName}
-              onChange={e => setGroupName(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleUpdateName()}
-              autoFocus
-            />
-            <button className="modal-btn modal-btn-primary" onClick={handleUpdateName}>✓</button>
-          </div>
-        ) : (
-          <span onClick={() => isAdmin && setEditingName(true)} style={isAdmin ? { cursor: 'pointer' } : {}}>
-            {conv?.name} {isAdmin && '✏️'}
-          </span>
-        )}
-      </div>
-
-      {/* Description */}
-      {conv?.description && (
-        <div style={{ textAlign: 'center', padding: '0 16px 16px', color: 'var(--text-secondary)', fontSize: '14px' }}>
-          {conv.description}
-        </div>
-      )}
-
-      <div className="group-info-members-count">
-        {members.length} members
-      </div>
-
-      {/* Members section */}
-      <div className="group-info-section">
-        <div className="group-info-section-title">Members</div>
-
-        {isAdmin && (
+    <div className="group-info-overlay" onClick={onClose}>
+      <div className="group-info-panel" onClick={e => e.stopPropagation()}>
+        <div className="group-info-header">
           <div
-            className="member-item"
-            style={{ cursor: 'pointer', color: 'var(--accent)' }}
-            onClick={() => setShowAddMember(true)}
+            className="group-info-avatar"
+            style={conversation.avatar_url ? { backgroundImage: `url(${conversation.avatar_url})` } : {}}
           >
-            <div className="member-avatar flex-center" style={{ fontSize: '20px' }}>➕</div>
-            <div className="member-name" style={{ color: 'var(--accent)' }}>Add member</div>
-          </div>
-        )}
-
-        {members.map(member => (
-          <div className="member-item" key={member.user_id}>
-            <div
-              className="member-avatar"
-              style={member.profiles?.avatar_url ? { backgroundImage: `url(${member.profiles.avatar_url})` } : {}}
-            />
-            <div className="member-name">
-              {member.profiles?.display_name || member.profiles?.username || 'Unknown'}
-              {member.user_id === currentUser?.id && (
-                <span className="text-muted" style={{ fontSize: '13px' }}> (You)</span>
-              )}
-            </div>
-            {member.is_admin && <span className="member-badge">Admin</span>}
-            {isAdmin && member.user_id !== currentUser?.id && (
-              <button
-                className="icon-btn"
-                style={{ width: '32px', height: '32px', fontSize: '14px' }}
-                onClick={() => handleRemoveMember(member.user_id)}
-                title="Remove member"
-              >
-                ✕
-              </button>
+            {!conversation.avatar_url && (
+              <div className="flex-center" style={{ width: '100%', height: '100%', borderRadius: '50%', fontSize: '28px', color: 'var(--text-secondary)' }}>👥</div>
             )}
           </div>
-        ))}
-      </div>
-
-      {/* Actions */}
-      <div className="group-info-section">
-        <div className="settings-action danger" onClick={() => setConfirmLeave(true)}>
-          🚪 Leave Group
+          <div className="group-info-name">{conversation.name || 'Group'}</div>
+          {conversation.description && (
+            <div className="group-info-desc">{conversation.description}</div>
+          )}
+          <button className="icon-btn" onClick={onClose} style={{ position: 'absolute', top: '16px', right: '16px' }}>✕</button>
         </div>
-        {isAdmin && (
-          <div className="settings-action danger" onClick={() => setConfirmDelete(true)}>
-            🗑️ Delete Group
-          </div>
-        )}
-      </div>
 
-      {/* Add member modal */}
-      {showAddMember && (
-        <div className="modal-overlay" onClick={() => setShowAddMember(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <button className="icon-btn" onClick={() => setShowAddMember(false)}>←</button>
-              <h3>Add Member</h3>
-            </div>
-            <div className="modal-body">
-              <input
-                className="modal-input"
-                placeholder="Search by @username..."
-                value={searchQuery}
-                onChange={e => handleSearch(e.target.value)}
-                autoFocus
-              />
-              {searchResults.map(user => (
-                <div key={user.id} className="user-search-item" onClick={() => handleAddMember(user.id)}>
-                  <div className="user-search-avatar"
-                    style={user.avatar_url ? { backgroundImage: `url(${user.avatar_url})` } : {}} />
-                  <div className="user-search-info">
-                    <div className="user-search-name">{user.display_name}</div>
-                    <div className="user-search-username">@{user.username}</div>
+        <div className="group-info-section">
+          <div className="group-info-section-title">Members ({members.length})</div>
+          {members.map(member => {
+            const profile = member.profiles;
+            return (
+              <div key={member.user_id} className="group-member-item">
+                <div
+                  className="group-member-avatar"
+                  style={profile?.avatar_url ? { backgroundImage: `url(${profile.avatar_url})` } : {}}
+                >
+                  {!profile?.avatar_url && (
+                    <div className="flex-center" style={{ width: '100%', height: '100%', borderRadius: '50%', fontSize: '14px', color: 'var(--text-secondary)' }}>
+                      {profile?.display_name?.[0]?.toUpperCase() || '?'}
+                    </div>
+                  )}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div className="group-member-name">
+                    {profile?.display_name || profile?.username || 'Unknown'}
+                    {member.user_id === currentUser?.id && ' (You)'}
                   </div>
                 </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Confirm leave */}
-      {confirmLeave && (
-        <div className="modal-overlay" onClick={() => setConfirmLeave(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '340px' }}>
-            <div className="modal-body" style={{ textAlign: 'center' }}>
-              <h3 style={{ marginBottom: '12px' }}>Leave Group?</h3>
-              <p className="text-muted mb-16">You won't be able to send or receive messages in this group.</p>
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
-                <button className="modal-btn modal-btn-secondary" onClick={() => setConfirmLeave(false)}>Cancel</button>
-                <button className="modal-btn modal-btn-danger" onClick={handleLeave}>Leave</button>
+                {member.is_admin && <span className="group-member-role">Admin</span>}
+                {isAdmin && member.user_id !== currentUser?.id && (
+                  <button
+                    className="icon-btn"
+                    onClick={() => handleRemoveMember(member.user_id)}
+                    title="Remove member"
+                    style={{ fontSize: '14px', color: 'var(--danger)' }}
+                  >
+                    ✕
+                  </button>
+                )}
               </div>
-            </div>
-          </div>
+            );
+          })}
         </div>
-      )}
 
-      {/* Confirm delete */}
-      {confirmDelete && (
-        <div className="modal-overlay" onClick={() => setConfirmDelete(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '340px' }}>
-            <div className="modal-body" style={{ textAlign: 'center' }}>
-              <h3 style={{ marginBottom: '12px' }}>Delete Group?</h3>
-              <p className="text-muted mb-16">This will permanently delete this group and all its messages.</p>
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
-                <button className="modal-btn modal-btn-secondary" onClick={() => setConfirmDelete(false)}>Cancel</button>
-                <button className="modal-btn modal-btn-danger" onClick={handleDelete}>Delete</button>
-              </div>
-            </div>
-          </div>
+        <div style={{ padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div className="settings-action danger" onClick={handleLeave}>🚪 Leave Group</div>
+          {isAdmin && <div className="settings-action danger" onClick={handleDelete}>🗑️ Delete Group</div>}
         </div>
-      )}
+      </div>
     </div>
   );
 };

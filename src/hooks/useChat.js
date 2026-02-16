@@ -1,42 +1,42 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../supabaseClient';
+import { MESSAGES_PER_PAGE } from '../utils/constants';
 
 /**
  * useChat — messages for a single conversation.
- * Handles fetching history, Realtime subscription, sending (text + image + replies),
- * optimistic updates, delete, and read receipts.
- *
- * @param {string|null} conversationId
- * @param {string|null} userId - current user ID
+ * Now with pagination (50 msgs at a time), optimistic updates, and better error handling.
  */
 export function useChat(conversationId, userId) {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState(null);
+  const [sending, setSending] = useState(false);
   const channelRef = useRef(null);
+  const oldestRef = useRef(null);
 
-  // ── Fetch message history ─────────────────────────────────
+  // ── Fetch initial messages (latest page) ──────────────────
   useEffect(() => {
-    if (!conversationId) { setMessages([]); setLoading(false); return; }
+    if (!conversationId) { setMessages([]); setLoading(false); setHasMore(true); return; }
     let cancelled = false;
 
     const fetchMessages = async () => {
       setLoading(true);
       setError(null);
+      setHasMore(true);
+      oldestRef.current = null;
 
       const { data, error: fetchErr } = await supabase
         .from('messages')
         .select(`
           *,
-          reply_message:reply_to (
-            id, content, user_id, message_type
-          ),
-          sender:user_id (
-            id, username, display_name, avatar_url
-          )
+          reply_message:reply_to ( id, content, user_id, message_type ),
+          sender:user_id ( id, username, display_name, avatar_url )
         `)
         .eq('conversation_id', conversationId)
-        .order('created_at', { ascending: true });
+        .order('created_at', { ascending: false })
+        .limit(MESSAGES_PER_PAGE);
 
       if (cancelled) return;
 
@@ -44,7 +44,12 @@ export function useChat(conversationId, userId) {
         setError('Failed to load messages');
         console.error(fetchErr);
       } else {
-        setMessages(data || []);
+        const sorted = (data || []).reverse();
+        setMessages(sorted);
+        setHasMore((data || []).length >= MESSAGES_PER_PAGE);
+        if (sorted.length > 0) {
+          oldestRef.current = sorted[0].created_at;
+        }
       }
       setLoading(false);
     };
@@ -53,6 +58,37 @@ export function useChat(conversationId, userId) {
     return () => { cancelled = true; };
   }, [conversationId]);
 
+  // ── Load older messages (pagination) ──────────────────────
+  const loadMore = useCallback(async () => {
+    if (!conversationId || !hasMore || loadingMore || !oldestRef.current) return;
+
+    setLoadingMore(true);
+
+    const { data, error: fetchErr } = await supabase
+      .from('messages')
+      .select(`
+        *,
+        reply_message:reply_to ( id, content, user_id, message_type ),
+        sender:user_id ( id, username, display_name, avatar_url )
+      `)
+      .eq('conversation_id', conversationId)
+      .lt('created_at', oldestRef.current)
+      .order('created_at', { ascending: false })
+      .limit(MESSAGES_PER_PAGE);
+
+    if (fetchErr) {
+      console.error(fetchErr);
+    } else {
+      const older = (data || []).reverse();
+      if (older.length > 0) {
+        oldestRef.current = older[0].created_at;
+        setMessages(prev => [...older, ...prev]);
+      }
+      setHasMore((data || []).length >= MESSAGES_PER_PAGE);
+    }
+    setLoadingMore(false);
+  }, [conversationId, hasMore, loadingMore]);
+
   // ── Realtime subscription ─────────────────────────────────
   useEffect(() => {
     if (!conversationId) return;
@@ -60,12 +96,9 @@ export function useChat(conversationId, userId) {
     const channel = supabase
       .channel(`chat:${conversationId}`)
       .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'messages',
+        event: 'INSERT', schema: 'public', table: 'messages',
         filter: `conversation_id=eq.${conversationId}`,
       }, async (payload) => {
-        // Fetch the full message with sender profile
         const { data: fullMsg } = await supabase
           .from('messages')
           .select(`
@@ -78,16 +111,13 @@ export function useChat(conversationId, userId) {
 
         if (fullMsg) {
           setMessages(prev => {
-            // Deduplicate (optimistic update may already have it)
             const filtered = prev.filter(m => m.id !== fullMsg.id && m.id !== payload.new.id);
             return [...filtered, fullMsg];
           });
         }
       })
       .on('postgres_changes', {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'messages',
+        event: 'UPDATE', schema: 'public', table: 'messages',
         filter: `conversation_id=eq.${conversationId}`,
       }, (payload) => {
         setMessages(prev => prev.map(m =>
@@ -115,12 +145,13 @@ export function useChat(conversationId, userId) {
       reply_to: replyToId,
       is_deleted: false,
       created_at: new Date().toISOString(),
-      sender: null, // will be filled by Realtime
+      sender: null,
       reply_message: null,
       _optimistic: true,
     };
 
     setMessages(prev => [...prev, optimistic]);
+    setSending(true);
 
     const { error: insertErr } = await supabase.from('messages').insert({
       conversation_id: conversationId,
@@ -136,6 +167,7 @@ export function useChat(conversationId, userId) {
       setMessages(prev => prev.filter(m => m.id !== optimistic.id));
       setError('Failed to send message');
     }
+    setSending(false);
   }, [conversationId, userId]);
 
   // ── Upload and send image ─────────────────────────────────
@@ -166,7 +198,6 @@ export function useChat(conversationId, userId) {
         .eq('id', messageId)
         .eq('user_id', userId);
     }
-    // "Delete for me" just removes from local state
     setMessages(prev => forEveryone
       ? prev.map(m => m.id === messageId ? { ...m, is_deleted: true, content: '' } : m)
       : prev.filter(m => m.id !== messageId)
@@ -176,14 +207,12 @@ export function useChat(conversationId, userId) {
   // ── Mark messages as read ─────────────────────────────────
   const markAsRead = useCallback(async (messageIds) => {
     if (!userId || !messageIds.length) return;
-
-    const reads = messageIds.map(id => ({
-      message_id: id,
-      user_id: userId,
-    }));
-
+    const reads = messageIds.map(id => ({ message_id: id, user_id: userId }));
     await supabase.from('message_reads').upsert(reads, { onConflict: 'message_id,user_id' });
   }, [userId]);
 
-  return { messages, loading, error, sendMessage, sendImage, deleteMessage, markAsRead };
+  return {
+    messages, loading, loadingMore, hasMore, error, sending,
+    sendMessage, sendImage, deleteMessage, markAsRead, loadMore,
+  };
 }

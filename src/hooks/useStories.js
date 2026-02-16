@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../supabaseClient';
+import { STORY_EXPIRY_HOURS } from '../utils/constants';
 
 /**
  * useStories — create, list, view, and manage stories.
- * Stories expire after 24 hours (enforced by DB + client filter).
+ * Stories expire after 12 hours (filtered by DB query + client side).
  *
  * @param {string|null} userId - current user ID
  */
@@ -14,6 +15,9 @@ export function useStories(userId) {
 
   // ── Fetch all non-expired stories, grouped by user ────────
   const fetchStories = useCallback(async () => {
+    // Calculate expiry time (now - 12h)
+    const expiryTime = new Date(Date.now() - STORY_EXPIRY_HOURS * 60 * 60 * 1000).toISOString();
+
     const { data } = await supabase
       .from('stories')
       .select(`
@@ -21,7 +25,7 @@ export function useStories(userId) {
         author:user_id ( id, username, display_name, avatar_url ),
         story_views ( viewer_id, viewed_at )
       `)
-      .gt('expires_at', new Date().toISOString())
+      .gt('created_at', expiryTime) // Filter by created_at > now - 12h
       .order('created_at', { ascending: true });
 
     if (data) {
@@ -31,9 +35,10 @@ export function useStories(userId) {
         const uid = story.user_id;
         if (!grouped[uid]) {
           grouped[uid] = {
-            user: story.author,
+            user: story.author || {},
             stories: [],
             hasUnviewed: false,
+            latestStoryTime: story.created_at,
           };
         }
         grouped[uid].stories.push(story);
@@ -41,15 +46,23 @@ export function useStories(userId) {
         if (userId && !story.story_views?.some(v => v.viewer_id === userId)) {
           grouped[uid].hasUnviewed = true;
         }
+        // Keep track of latest story time for sorting
+        if (new Date(story.created_at) > new Date(grouped[uid].latestStoryTime)) {
+            grouped[uid].latestStoryTime = story.created_at;
+        }
       });
 
-      // Put current user's stories first
+      // Put current user's stories first, then sort by latest update/unviewed status
       const sorted = Object.values(grouped).sort((a, b) => {
         if (a.user.id === userId) return -1;
         if (b.user.id === userId) return 1;
+        
+        // Prioritize unviewed stories
         if (a.hasUnviewed && !b.hasUnviewed) return -1;
         if (!a.hasUnviewed && b.hasUnviewed) return 1;
-        return 0;
+        
+        // Then sort by latest story time (newest first)
+        return new Date(b.latestStoryTime) - new Date(a.latestStoryTime);
       });
 
       setStories(sorted);
@@ -79,18 +92,30 @@ export function useStories(userId) {
     if (!userId) return;
 
     let mediaUrl = null;
+    let mediaType = 'text';
+
     if (mediaFile) {
-      const ext = mediaFile.name.split('.').pop();
-      const path = `stories/${userId}/${Date.now()}.${ext}`;
-      await supabase.storage.from('story-media').upload(path, mediaFile);
-      const { data: { publicUrl } } = supabase.storage.from('story-media').getPublicUrl(path);
-      mediaUrl = publicUrl;
+        mediaType = 'image';
+        const ext = mediaFile.name.split('.').pop();
+        const path = `stories/${userId}/${Date.now()}.${ext}`;
+        
+        const { error: upErr } = await supabase.storage.from('story-media').upload(path, mediaFile);
+        if (upErr) {
+            console.error('Story upload failed:', upErr);
+            return;
+        }
+        
+        const { data: { publicUrl } } = supabase.storage.from('story-media').getPublicUrl(path);
+        mediaUrl = publicUrl;
     }
 
     await supabase.from('stories').insert({
       user_id: userId,
       content: content || '',
       media_url: mediaUrl,
+      // Note: We don't store media_type in DB, we infer it from presence of media_url
+      // providing explicit expires_at just in case DB default is different
+      expires_at: new Date(Date.now() + STORY_EXPIRY_HOURS * 60 * 60 * 1000).toISOString(),
     });
 
     await fetchStories();
@@ -111,5 +136,5 @@ export function useStories(userId) {
     await fetchStories();
   }, [userId, fetchStories]);
 
-  return { stories, myStories, loading, createStory, viewStory, deleteStory };
+  return { stories, myStories, loading, createStory, viewStory, deleteStory, refresh: fetchStories };
 }

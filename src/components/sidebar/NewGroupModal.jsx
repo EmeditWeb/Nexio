@@ -1,59 +1,68 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useCallback } from 'react';
+import { supabase } from '../../supabaseClient';
 import { useAuth } from '../../contexts/AuthContext';
-import { useProfile } from '../../hooks/useProfile';
+import { SEARCH_MIN_CHARS, SEARCH_RESULTS_LIMIT, GROUP_NAME_MIN_LENGTH, GROUP_MAX_MEMBERS } from '../../utils/constants';
 
 /**
- * NewGroupModal — create a group chat with name, description, avatar, and members.
+ * NewGroupModal — create a group with name, description, and selected members.
  */
 const NewGroupModal = ({ onClose, onCreated, convHook }) => {
   const { currentUser } = useAuth();
-  const { searchUsers } = useProfile(currentUser?.id);
-
-  const [step, setStep] = useState(1); // 1: name/info, 2: add members
-  const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
-  const [avatarFile, setAvatarFile] = useState(null);
-  const [avatarPreview, setAvatarPreview] = useState(null);
+  const [step, setStep] = useState('details');
+  const [groupName, setGroupName] = useState('');
+  const [groupDesc, setGroupDesc] = useState('');
   const [selectedMembers, setSelectedMembers] = useState([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
   const [creating, setCreating] = useState(false);
-  const fileRef = useRef();
+  const [error, setError] = useState('');
 
-  const handleSearch = useCallback(async (q) => {
-    setSearchQuery(q);
-    if (q.length < 2) { setSearchResults([]); return; }
-    setLoading(true);
-    const users = await searchUsers(q);
-    setSearchResults(users.filter(u => !selectedMembers.some(m => m.id === u.id)));
-    setLoading(false);
-  }, [searchUsers, selectedMembers]);
+  const handleSearch = useCallback(async (val) => {
+    setQuery(val);
+    if (val.length < SEARCH_MIN_CHARS) { setResults([]); return; }
 
-  const addMember = (user) => {
-    setSelectedMembers(prev => [...prev, user]);
-    setSearchResults(prev => prev.filter(u => u.id !== user.id));
-    setSearchQuery('');
-  };
+    setSearching(true);
+    const { data } = await supabase
+      .from('profiles')
+      .select('id, username, display_name, avatar_url')
+      .or(`username.ilike.%${val}%,display_name.ilike.%${val}%`)
+      .neq('id', currentUser.id)
+      .limit(SEARCH_RESULTS_LIMIT);
 
-  const removeMember = (userId) => {
-    setSelectedMembers(prev => prev.filter(m => m.id !== userId));
+    setResults(data || []);
+    setSearching(false);
+  }, [currentUser?.id]);
+
+  const toggleMember = (user) => {
+    setSelectedMembers(prev => {
+      const exists = prev.find(m => m.id === user.id);
+      if (exists) return prev.filter(m => m.id !== user.id);
+      if (prev.length >= GROUP_MAX_MEMBERS - 1) {
+        setError(`Maximum ${GROUP_MAX_MEMBERS} members per group`);
+        return prev;
+      }
+      return [...prev, user];
+    });
   };
 
   const handleCreate = async () => {
-    if (!name.trim()) return;
-    setCreating(true);
+    if (groupName.trim().length < GROUP_NAME_MIN_LENGTH) {
+      setError(`Group name must be at least ${GROUP_NAME_MIN_LENGTH} characters`);
+      return;
+    }
+    if (selectedMembers.length === 0) {
+      setError('Add at least one member');
+      return;
+    }
 
+    setCreating(true);
     const conv = await convHook.createGroup({
-      name: name.trim(),
-      description: description.trim(),
-      avatarFile,
+      name: groupName.trim(),
+      description: groupDesc.trim(),
       memberIds: selectedMembers.map(m => m.id),
     });
-
-    if (conv) {
-      onCreated(conv.id);
-    }
+    if (conv) onCreated(conv.id);
     setCreating(false);
   };
 
@@ -61,58 +70,50 @@ const NewGroupModal = ({ onClose, onCreated, convHook }) => {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <button className="icon-btn" onClick={step === 2 ? () => setStep(1) : onClose}>←</button>
-          <h3>{step === 1 ? 'New Group' : 'Add Members'}</h3>
+          <h3>{step === 'details' ? 'New Group' : 'Add Members'}</h3>
+          <button className="icon-btn" onClick={onClose}>✕</button>
         </div>
 
         <div className="modal-body">
-          {step === 1 ? (
+          {step === 'details' ? (
             <>
-              <div className="flex-center mb-16">
-                <div
-                  className="profile-setup-avatar"
-                  style={{
-                    width: '80px', height: '80px',
-                    ...(avatarPreview ? { backgroundImage: `url(${avatarPreview})` } : {}),
-                  }}
-                  onClick={() => fileRef.current?.click()}
-                >
-                  {!avatarPreview && '📷'}
-                </div>
-                <input
-                  type="file"
-                  accept="image/*"
-                  ref={fileRef}
-                  style={{ display: 'none' }}
-                  onChange={e => {
-                    const file = e.target.files[0];
-                    if (file) {
-                      setAvatarFile(file);
-                      setAvatarPreview(URL.createObjectURL(file));
-                    }
-                  }}
-                />
-              </div>
-
               <input
                 className="modal-input"
-                placeholder="Group Name"
-                value={name}
-                onChange={e => setName(e.target.value)}
-                maxLength={50}
+                placeholder="Group name (required)"
+                value={groupName}
+                onChange={e => { setGroupName(e.target.value); setError(''); }}
                 autoFocus
               />
-              <textarea
-                className="modal-textarea"
-                placeholder="Group Description (optional)"
-                value={description}
-                onChange={e => setDescription(e.target.value)}
-                maxLength={200}
-                rows={2}
+              <input
+                className="modal-input"
+                placeholder="Description (optional)"
+                value={groupDesc}
+                onChange={e => setGroupDesc(e.target.value)}
               />
+              {error && <div className="error-text">{error}</div>}
+              <button
+                className="modal-btn modal-btn-primary w-full"
+                onClick={() => {
+                  if (groupName.trim().length < GROUP_NAME_MIN_LENGTH) {
+                    setError(`Group name must be at least ${GROUP_NAME_MIN_LENGTH} characters`);
+                    return;
+                  }
+                  setStep('members');
+                }}
+              >
+                Next — Add Members
+              </button>
             </>
           ) : (
             <>
+              <input
+                className="modal-input"
+                placeholder="Search users to add..."
+                value={query}
+                onChange={e => handleSearch(e.target.value)}
+                autoFocus
+              />
+
               {/* Selected members chips */}
               {selectedMembers.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
@@ -120,66 +121,58 @@ const NewGroupModal = ({ onClose, onCreated, convHook }) => {
                     <span
                       key={m.id}
                       style={{
-                        background: 'var(--accent-dim)',
-                        color: 'var(--accent)',
-                        padding: '4px 10px',
-                        borderRadius: '16px',
-                        fontSize: '13px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
+                        background: 'var(--accent-dim)', color: 'var(--accent)',
+                        padding: '4px 10px', borderRadius: '20px', fontSize: '12px',
+                        cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px',
                       }}
+                      onClick={() => toggleMember(m)}
                     >
-                      {m.display_name}
-                      <span style={{ cursor: 'pointer' }} onClick={() => removeMember(m.id)}>✕</span>
+                      {m.display_name || m.username} ✕
                     </span>
                   ))}
                 </div>
               )}
 
-              <input
-                className="modal-input"
-                placeholder="Search by @username..."
-                value={searchQuery}
-                onChange={e => handleSearch(e.target.value)}
-                autoFocus
-              />
-
-              {loading && <p className="text-muted" style={{ textAlign: 'center' }}>Searching...</p>}
-
-              {searchResults.map(user => (
-                <div key={user.id} className="user-search-item" onClick={() => addMember(user)}>
-                  <div
-                    className="user-search-avatar"
-                    style={user.avatar_url ? { backgroundImage: `url(${user.avatar_url})` } : {}}
-                  />
-                  <div className="user-search-info">
-                    <div className="user-search-name">{user.display_name}</div>
-                    <div className="user-search-username">@{user.username}</div>
-                  </div>
+              {searching && (
+                <div className="flex-center" style={{ padding: '20px' }}>
+                  <div className="splash-spinner" style={{ width: '24px', height: '24px' }} />
                 </div>
-              ))}
-            </>
-          )}
-        </div>
+              )}
 
-        <div className="modal-footer">
-          {step === 1 ? (
-            <button
-              className="modal-btn modal-btn-primary"
-              onClick={() => setStep(2)}
-              disabled={!name.trim()}
-            >
-              Next
-            </button>
-          ) : (
-            <button
-              className="modal-btn modal-btn-primary"
-              onClick={handleCreate}
-              disabled={creating}
-            >
-              {creating ? 'Creating...' : 'Create Group'}
-            </button>
+              {results.map(user => {
+                const isSelected = selectedMembers.some(m => m.id === user.id);
+                return (
+                  <div key={user.id} className="modal-user-item" onClick={() => toggleMember(user)}>
+                    <div
+                      className="modal-user-avatar"
+                      style={user.avatar_url ? { backgroundImage: `url(${user.avatar_url})` } : {}}
+                    >
+                      {!user.avatar_url && (
+                        <div className="flex-center" style={{ width: '100%', height: '100%', borderRadius: '50%', fontSize: '16px', color: 'var(--text-secondary)' }}>
+                          {user.display_name?.[0]?.toUpperCase() || '?'}
+                        </div>
+                      )}
+                    </div>
+                    <div className="modal-user-info">
+                      <div className="modal-user-name">{user.display_name || user.username}</div>
+                      <div className="modal-user-username">@{user.username}</div>
+                    </div>
+                    {isSelected && <span className="modal-user-check">✓</span>}
+                  </div>
+                );
+              })}
+
+              {error && <div className="error-text">{error}</div>}
+
+              <button
+                className="modal-btn modal-btn-primary w-full"
+                onClick={handleCreate}
+                disabled={creating || selectedMembers.length === 0}
+                style={{ marginTop: '12px' }}
+              >
+                {creating ? <div className="btn-spinner" /> : `Create Group (${selectedMembers.length + 1} members)`}
+              </button>
+            </>
           )}
         </div>
       </div>
