@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Rounded square background -->
+  <rect width="64" height="64" rx="14" fill="#1877F2"/>
+  <!-- Chat bubble -->
+  <path d="M32 14C21.507 14 13 21.163 13 30c0 3.414 1.382 6.569 3.72 9.13L14 47l8.525-3.41C24.95 44.51 28.37 45 32 45c10.493 0 19-6.163 19-14S42.493 14 32 14z" fill="white"/>
+  <!-- Three dots -->
+  <circle cx="24.5" cy="30" r="2.5" fill="#1877F2"/>
+  <circle cx="32" cy="30" r="2.5" fill="#1877F2"/>
+  <circle cx="39.5" cy="30" r="2.5" fill="#1877F2"/>
+</svg>
